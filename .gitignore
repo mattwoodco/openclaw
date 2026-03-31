@@ -1,0 +1,4 @@
+.DS_Store
+.env*.local
+client_secret*.json
+workspace*
