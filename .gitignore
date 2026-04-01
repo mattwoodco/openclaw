@@ -2,3 +2,4 @@
 .env*.local
 client_secret*.json
 workspace*
+configs*

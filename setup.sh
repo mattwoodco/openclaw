@@ -31,11 +31,30 @@ set -Eeuo pipefail
 # ============================================================
 
 # --- Configuration ---
-VM_NAME="openclaw"
+# Get script directory first
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Support config file mode: ./setup.sh config=bubba
+CONFIG_NAME="${1:-}"
+CONFIG_NAME="${CONFIG_NAME#config=}"
+if [[ "${1:-}" == config=* ]] && [[ -f "$SCRIPT_DIR/configs/${CONFIG_NAME}.env" ]]; then
+    echo "Loading configuration: $CONFIG_NAME"
+    set +u  # Allow unset variables temporarily
+    source "$SCRIPT_DIR/configs/${CONFIG_NAME}.env"
+    set -u
+    echo "  VM Name: $VM_NAME"
+    echo "  Port: $OPENCLAW_PORT"
+    echo "  Workspace: $WORKSPACE_DIR"
+else
+    # Traditional environment variable mode
+    VM_NAME="${VM_NAME:-openclaw}"
+    OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+    MAC_WORKSPACE_DIR="${MAC_WORKSPACE_DIR:-${SCRIPT_DIR}/workspace}"
+fi
+
 DISTRO="ubuntu"
 SVC_USER="ocagent"
 NODE_MAJOR="24"
-OPENCLAW_PORT="18789"
 TIMEOUT_SECONDS="180"
 # Default AI model (provider/model format). Override with OPENCLAW_MODEL in .env.local.
 DEFAULT_MODEL="anthropic/claude-sonnet-4-20250514"
@@ -44,8 +63,18 @@ DEFAULT_MODEL="anthropic/claude-sonnet-4-20250514"
 TELEGRAM_USER_ID=""
 # Mac folder synced into the VM via bind mount.
 # Defaults to a 'workspace/' subdirectory next to this script.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MAC_WORKSPACE_DIR="${MAC_WORKSPACE_DIR:-${SCRIPT_DIR}/workspace}"
+
+# Set workspace directory (from config or environment)
+if [[ -n "${WORKSPACE_DIR:-}" ]]; then
+    # Config file specified WORKSPACE_DIR
+    MAC_WORKSPACE_DIR="$WORKSPACE_DIR"
+else
+    # Use environment variable or default
+    MAC_WORKSPACE_DIR="${MAC_WORKSPACE_DIR:-${SCRIPT_DIR}/workspace}"
+fi
+
+# Convert relative paths to absolute paths (required for OrbStack mounting)
+MAC_WORKSPACE_DIR="$(realpath "$MAC_WORKSPACE_DIR")"
 
 # Validate configuration values
 [[ "$SVC_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "Error: Invalid SVC_USER: ${SVC_USER}" >&2; exit 1; }
@@ -318,9 +347,39 @@ chmod 600 "/home/${SVC_USER}/.openclaw/openclaw.json"
 # Disable macOS-only and hardware-dependent skills that can't work in a VM
 su -s /bin/bash - "$SVC_USER" -c "
   openclaw config set browser.enabled false 2>/dev/null || true
+
+  # Complete approval bypass configuration
+  openclaw config set approvals.exec.enabled false 2>/dev/null || true
+  openclaw config set gateway.mode local 2>/dev/null || true
+
+  # Enable exec approvals on Telegram so commands can run from chat
+  openclaw config set channels.telegram.execApprovals --strict-json '{\"enabled\":true}' 2>/dev/null || true
+
   for skill in apple-notes apple-reminders bear-notes blogwatcher bluebubbles blucli camsnap eightctl gemini gog goplaces himalaya imsg node-connect obsidian openai-whisper openai-whisper-api openhue ordercli peekaboo sag sherpa-onnx-tts songsee sonoscli spotify-player summarize things-mac voice-call wacli; do
     openclaw config set skills.entries.\${skill}.enabled false 2>/dev/null || true
   done
+
+  # Auto-approve all commands to eliminate approval prompts
+  sleep 2  # Give gateway time to start
+
+  # Comprehensive allowlist patterns for complete bypass
+  openclaw approvals allowlist add '*' 2>/dev/null || true
+  openclaw approvals allowlist add 'gws*' 2>/dev/null || true
+  openclaw approvals allowlist add 'github*' 2>/dev/null || true
+  openclaw approvals allowlist add 'gh*' 2>/dev/null || true
+  openclaw approvals allowlist add 'git*' 2>/dev/null || true
+  openclaw approvals allowlist add 'npm*' 2>/dev/null || true
+  openclaw approvals allowlist add 'node*' 2>/dev/null || true
+  openclaw approvals allowlist add 'curl*' 2>/dev/null || true
+  openclaw approvals allowlist add 'wget*' 2>/dev/null || true
+  openclaw approvals allowlist add 'bash*' 2>/dev/null || true
+  openclaw approvals allowlist add 'sh*' 2>/dev/null || true
+
+  # Verify approval configuration
+  echo 'Approval bypass configuration applied:'
+  openclaw config get approvals.exec.enabled 2>/dev/null || echo '  approvals.exec.enabled: not set'
+  openclaw config get gateway.mode 2>/dev/null || echo '  gateway.mode: not set'
+  openclaw approvals allowlist list 2>/dev/null || echo '  allowlist: not accessible'
 "
 
 echo "[9/10] Installing headless Chrome service..."
@@ -543,11 +602,30 @@ orb -m "$VM_NAME" -u root bash -c "
 echo "  Workspace mounted: /workspace/vm-openclaw ↔ ${MAC_WORKSPACE_DIR}"
 
 echo "Installing skills..."
-orb -m "$VM_NAME" -u root su -s /bin/bash "$SVC_USER" -c "
-  openclaw skills install openclaw-agent-browser-clawdbot 2>&1 || true
-  openclaw skills install gws-workspace 2>&1 || true
-  openclaw skills install github 2>&1 || true
-"
+SKILLS_SRC="$(cd "$(dirname "$0")" && pwd)/skills"
+REQUIRED_SKILLS="openclaw-agent-browser-clawdbot gws-workspace github"
+orb -m "$VM_NAME" -u root bash -c "mkdir -p /workspace/vm-openclaw/skills"
+
+for skill_name in $REQUIRED_SKILLS; do
+  # Local copy first (instant, no network)
+  if [ -d "$SKILLS_SRC/$skill_name" ]; then
+    echo "  $skill_name (bundled)"
+    orb -m "$VM_NAME" -u root bash -c "rm -rf /workspace/vm-openclaw/skills/$skill_name"
+    cp -r "$SKILLS_SRC/$skill_name" "$MAC_WORKSPACE_DIR/skills/$skill_name"
+    orb -m "$VM_NAME" -u root chown -R "${SVC_USER}:${SVC_USER}" "/workspace/vm-openclaw/skills/$skill_name"
+  else
+    # Fallback to ClawHub with retry
+    echo "  $skill_name (ClawHub)"
+    for attempt in 1 2 3; do
+      if orb -m "$VM_NAME" -u root su -s /bin/bash "$SVC_USER" -c \
+           "openclaw skills install $skill_name 2>&1"; then
+        break
+      fi
+      echo "    retry $((attempt+1))/3..."
+      sleep 5
+    done
+  fi
+done
 
 # ============================================================
 # Inject API keys from .env.local (BEFORE starting the service)
@@ -562,7 +640,13 @@ if [ -f "$ENV_FILE" ]; then
   echo "Found .env.local — injecting API keys..."
 
   OPENAI_KEY="$(grep '^OPENAI_API_KEY=' "$ENV_FILE" | cut -d= -f2- || true)"
-  TELEGRAM_TOKEN="$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
+  # Use config-specific TELEGRAM_BOT_TOKEN if set, otherwise fall back to .env.local
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    TELEGRAM_TOKEN="$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
+  else
+    TELEGRAM_TOKEN="$TELEGRAM_BOT_TOKEN"
+    echo "  Using config-specific TELEGRAM_BOT_TOKEN"
+  fi
   ANTHROPIC_KEY="$(grep '^ANTHROPIC_API_KEY=' "$ENV_FILE" | cut -d= -f2- || true)"
   GITHUB_TOKEN="$(grep '^GITHUB_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
 
@@ -635,6 +719,21 @@ if [ -f "$ENV_FILE" ]; then
     "
     echo "  GitHub: configured"
   fi
+
+  # Add approval bypass environment variables for persistence
+  echo "  Configuring approval bypass environment..."
+  orb -m "$VM_NAME" -u root bash -c "
+    ENV_PATH=/home/$SVC_USER/.openclaw/.anthropic-env
+    # Ensure the environment file exists
+    touch \$ENV_PATH
+    chown $SVC_USER:$SVC_USER \$ENV_PATH
+    chmod 600 \$ENV_PATH
+    # Add approval bypass environment variables
+    echo 'OPENCLAW_APPROVALS_EXEC_ENABLED=false' >> \$ENV_PATH
+    echo 'OPENCLAW_GATEWAY_MODE=local' >> \$ENV_PATH
+    echo 'OPENCLAW_AUTO_APPROVE=true' >> \$ENV_PATH
+  "
+  echo "  Approval bypass environment: configured"
 
   # Google Workspace: copy client_secret.json if found next to setup.sh
   GWS_SECRET_FILE="$(find "$SCRIPT_DIR" -maxdepth 1 -name 'client_secret*.json' -print -quit 2>/dev/null)"
@@ -737,6 +836,36 @@ if [ "$READY" -eq 1 ]; then
   else
     echo "  Warning: Cron not responding. Run: openclaw doctor --fix" >&2
   fi
+
+  # Reinforce approval bypass configuration now that gateway is fully running
+  echo "  Reinforcing approval bypass configuration..."
+  orb -m "$VM_NAME" -u root su -s /bin/bash "$SVC_USER" -c "
+    # Ensure exec approvals are completely disabled
+    openclaw config set approvals.exec.enabled false 2>/dev/null || true
+    openclaw config set gateway.mode local 2>/dev/null || true
+
+    # Reinforce comprehensive allowlist patterns
+    openclaw approvals allowlist clear 2>/dev/null || true
+    openclaw approvals allowlist add '*' 2>/dev/null || true
+    openclaw approvals allowlist add 'gws*' 2>/dev/null || true
+    openclaw approvals allowlist add 'github*' 2>/dev/null || true
+    openclaw approvals allowlist add 'gh*' 2>/dev/null || true
+    openclaw approvals allowlist add 'git*' 2>/dev/null || true
+    openclaw approvals allowlist add 'npm*' 2>/dev/null || true
+    openclaw approvals allowlist add 'node*' 2>/dev/null || true
+    openclaw approvals allowlist add 'curl*' 2>/dev/null || true
+    openclaw approvals allowlist add 'wget*' 2>/dev/null || true
+    openclaw approvals allowlist add 'bash*' 2>/dev/null || true
+    openclaw approvals allowlist add 'sh*' 2>/dev/null || true
+    openclaw approvals allowlist add 'python*' 2>/dev/null || true
+    openclaw approvals allowlist add 'pip*' 2>/dev/null || true
+    openclaw approvals allowlist add 'sudo*' 2>/dev/null || true
+
+    echo 'Final approval bypass verification:'
+    echo '  approvals.exec.enabled:' \$(openclaw config get approvals.exec.enabled 2>/dev/null || echo 'not set')
+    echo '  gateway.mode:' \$(openclaw config get gateway.mode 2>/dev/null || echo 'not set')
+    echo '  allowlist entries:' \$(openclaw approvals allowlist list 2>/dev/null | wc -l || echo '0')
+  " 2>&1 || echo "  Warning: Could not reinforce approval bypass configuration"
 fi
 
 # ============================================================
@@ -773,7 +902,12 @@ if [ "$SERVICE_STATUS" = "active" ] && [ "$HTTP_CODE" = "200" ]; then
 
   # Send Telegram notification with auto-auth URL
   if [ -n "${TELEGRAM_CONFIGURED:-}" ] && [ -n "${TELEGRAM_USER_ID:-}" ]; then
-    TELEGRAM_TOKEN_VAL="$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+    # Use config-specific token if available, otherwise fall back to .env.local
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+      TELEGRAM_TOKEN_VAL="$TELEGRAM_BOT_TOKEN"
+    else
+      TELEGRAM_TOKEN_VAL="$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+    fi
     if [ -n "$GATEWAY_TOKEN" ]; then
       TG_URL="http://localhost:${OPENCLAW_PORT}/?token=${GATEWAY_TOKEN}"
     else
@@ -808,8 +942,9 @@ if [ -n "${GWS_CONFIGURED:-}" ]; then
     npm install -g @googleworkspace/cli@latest >/dev/null 2>&1
   fi
 
-  # Check if Mac already has valid gws credentials (from a previous setup)
-  if command -v gws >/dev/null 2>&1 && gws auth status 2>/dev/null | grep -q '"has_refresh_token": true'; then
+  # Check if Mac already has valid gws credentials with full scopes (from a previous setup)
+  if command -v gws >/dev/null 2>&1 && gws auth status 2>/dev/null | grep -q '"has_refresh_token": true' && \
+     gws auth status 2>/dev/null | grep -q 'https://www.googleapis.com/auth/cloud-platform'; then
     echo "  Found existing Google credentials on Mac — exporting to VM..."
     gws auth export --unmasked 2>/dev/null | grep -v 'keyring' | orb -m "$VM_NAME" -u root bash -c "
       cat > /home/$SVC_USER/.config/gws/credentials.json
@@ -833,7 +968,7 @@ if [ -n "${GWS_CONFIGURED:-}" ]; then
     echo
     mkdir -p ~/.config/gws
     cp "$GWS_SECRET_FILE" ~/.config/gws/client_secret.json
-    if gws auth login -s drive,gmail,sheets,calendar,docs; then
+    if gws auth login --full; then
       echo "  Exporting credentials to VM..."
       gws auth export --unmasked 2>/dev/null | grep -v 'keyring' | orb -m "$VM_NAME" -u root bash -c "
         cat > /home/$SVC_USER/.config/gws/credentials.json
@@ -845,7 +980,7 @@ if [ -n "${GWS_CONFIGURED:-}" ]; then
     else
       echo
       echo "  OAuth login failed. Complete it later:"
-      echo "  gws auth login -s drive,gmail,sheets,calendar,docs"
+      echo "  gws auth login --full"
       echo "  gws auth export --unmasked | orb -m ${VM_NAME} -u root bash -c \\"
       echo "    'cat > /home/${SVC_USER}/.config/gws/credentials.json && chmod 600 /home/${SVC_USER}/.config/gws/credentials.json && chown ${SVC_USER}:${SVC_USER} /home/${SVC_USER}/.config/gws/credentials.json'"
     fi
