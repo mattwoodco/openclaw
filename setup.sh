@@ -937,8 +937,8 @@ if [ "$SERVICE_STATUS" = "active" ] && [ "$HTTP_CODE" = "200" ]; then
     fi
     curl -s "https://api.telegram.org/bot${TELEGRAM_TOKEN_VAL}/sendMessage" \
       -d chat_id="${TELEGRAM_USER_ID}" \
-      -d parse_mode="Markdown" \
-      -d text="OpenClaw is ready: [Open Dashboard](${TG_URL})" \
+      -d parse_mode="HTML" \
+      -d text="OpenClaw is ready: <a href=\"${TG_URL}\">Open Dashboard</a>" \
       >/dev/null 2>&1 || true
   fi
 else
