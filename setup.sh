@@ -334,7 +334,18 @@ cat > "/home/${SVC_USER}/.openclaw/openclaw.json" <<EOF
       "sandbox": {
         "mode": "off"
       }
-    }
+    },
+    "list": [
+      {
+        "id": "default",
+        "tools": {
+          "exec": {
+            "ask": "off",
+            "security": "full"
+          }
+        }
+      }
+    ]
   }
 }
 EOF
