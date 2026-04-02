@@ -6,7 +6,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIGS_DIR="$SCRIPT_DIR/configs"
-WORKSPACES_DIR="$SCRIPT_DIR/workspaces"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 
 # Colors for output
@@ -17,7 +16,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Ensure directories exist
-mkdir -p "$CONFIGS_DIR" "$WORKSPACES_DIR" "$TEMPLATES_DIR"
+mkdir -p "$CONFIGS_DIR" "$TEMPLATES_DIR"
 
 usage() {
     echo "OpenClaw VM Configuration Manager"
@@ -46,12 +45,8 @@ get_next_port() {
     local base_port=18790
     local port=$base_port
 
-    while [ -f "$CONFIGS_DIR"/*.env ] 2>/dev/null; do
-        if grep -q "OPENCLAW_PORT=$port" "$CONFIGS_DIR"/*.env 2>/dev/null; then
-            ((port++))
-        else
-            break
-        fi
+    while grep -rq "OPENCLAW_PORT=$port" "$CONFIGS_DIR"/*.env 2>/dev/null; do
+        ((port++))
     done
 
     echo $port
@@ -61,7 +56,7 @@ get_next_port() {
 scaffold_config() {
     local name="$1"
     local config_file="$CONFIGS_DIR/$name.env"
-    local workspace_dir="./workspaces/workspace-$name"
+    local workspace_dir="./workspace-$name"
     local port=$(get_next_port)
 
     if [ -f "$config_file" ]; then
@@ -69,8 +64,10 @@ scaffold_config() {
         return 1
     fi
 
+    local display_name="$(echo "$name" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+
     cat > "$config_file" << EOF
-# OpenClaw VM Configuration: $name
+# OpenClaw VM Configuration: $display_name
 # Generated: $(date)
 
 # === Basic VM Settings ===
@@ -79,27 +76,27 @@ OPENCLAW_PORT=$port
 WORKSPACE_DIR=$workspace_dir
 
 # === Bot Identity ===
-BOT_NAME="OpenClaw Assistant: $name"
-BOT_DESCRIPTION="AI assistant for various tasks"
+BOT_NAME="$display_name"
+BOT_DESCRIPTION="$display_name - AI assistant for various tasks"
 
 # === API Keys ===
-# Inherit from environment or set specific keys
+# Inherit from .env.local or set specific keys
 ANTHROPIC_API_KEY=\${ANTHROPIC_API_KEY}
 OPENAI_API_KEY=\${OPENAI_API_KEY}
 
 # === Service Configurations ===
-# Set VM-specific tokens if needed
+# $display_name-specific Telegram token
 TELEGRAM_BOT_TOKEN=\${TELEGRAM_BOT_TOKEN_$(echo $name | tr '[:lower:]' '[:upper:]' | tr '-' '_')}
 GITHUB_TOKEN=\${GITHUB_TOKEN}
 
 # === Google Workspace ===
-# Reuse existing credentials or set VM-specific
+# Reuse existing credentials
 GOOGLE_WORKSPACE_CREDENTIALS_FILE=\${GOOGLE_WORKSPACE_CREDENTIALS_FILE}
 
 # === Feature Flags ===
 ENABLE_EMAIL_SENDING=true
 ENABLE_CODE_EXECUTION=true
-ENABLE_WEB_BROWSING=false
+ENABLE_WEB_BROWSING=true
 ENABLE_CRON_JOBS=true
 
 # === Security & Approval Settings ===
@@ -109,7 +106,7 @@ AUTO_APPROVE_FILE_OPERATIONS=false
 AUTO_APPROVE_WEB_REQUESTS=false
 
 # Use wildcard allowlist to skip all approvals (development only)
-OPENCLAW_SKIP_APPROVALS=false
+OPENCLAW_SKIP_APPROVALS=true
 
 # === Advanced Settings ===
 # Memory and performance
@@ -119,8 +116,19 @@ NODE_OPTIONS="--max-old-space-size=2048"
 LOG_LEVEL=info
 
 # Custom model configuration
-# ANTHROPIC_MODEL="claude-sonnet-4-20250514"
-# OPENAI_MODEL="gpt-4"
+ANTHROPIC_MODEL="claude-sonnet-4-20250514"
+
+# === Skills Configuration ===
+# Core skills (recommended for all bots)
+ENABLE_BROWSER_SKILLS=true
+ENABLE_CLAWDBOT_SKILLS=true
+ENABLE_WORKSPACE_SKILLS=true
+
+# Skill-specific settings
+OPENCLAW_SKILLS="openclaw-agent-browser-clawdbot,gws-workspace,github"
+
+# Per-bot skill customization (future use)
+# CUSTOM_SKILLS=""
 EOF
 
     echo -e "${GREEN}✓ Created configuration: $config_file${NC}"
@@ -221,7 +229,7 @@ copy_config() {
 delete_config() {
     local name="$1"
     local config_file="$CONFIGS_DIR/$name.env"
-    local workspace_dir="$WORKSPACES_DIR/workspace-$name"
+    local workspace_dir="$SCRIPT_DIR/workspace-$name"
 
     if [ ! -f "$config_file" ]; then
         echo -e "${RED}Error: Configuration '$name' not found${NC}"
