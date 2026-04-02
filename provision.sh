@@ -423,12 +423,18 @@ start_services() {
     log_info "CLI device already approved (or none pending)"
   fi
 
-  # Reinforce approval bypass
+  # Reinforce approval bypass for both wildcard and main (Telegram) agents
   orb -m "$VM_NAME" -u root su -s /bin/bash "$SVC_USER" -c "
-    openclaw approvals allowlist add '*' 2>/dev/null || true
-    openclaw approvals allowlist add 'gws*' 2>/dev/null || true
-    openclaw approvals allowlist add 'bash*' 2>/dev/null || true
-    openclaw approvals allowlist add 'sh*' 2>/dev/null || true
+    for agent_id in '*' 'main'; do
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" '*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'gws*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'gh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'git*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'bash*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'sh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'cd*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'base64*' 2>/dev/null || true
+    done
   "
   log_info "Approval bypass allowlist configured"
 
@@ -444,9 +450,13 @@ start_services() {
   echo -e "${GREEN}${BOLD}============================================${NC}"
   echo ""
   if [ -n "$gateway_token" ]; then
-    echo -e "  URL:  http://localhost:${OPENCLAW_PORT}/?token=${gateway_token}"
+    local dashboard_url="http://localhost:${OPENCLAW_PORT}/?token=${gateway_token}"
+    echo -e "  URL:  ${dashboard_url}"
+    # Open dashboard in browser with fresh token
+    open "$dashboard_url" 2>/dev/null || true
   else
     echo -e "  URL:  http://localhost:${OPENCLAW_PORT}"
+    open "http://localhost:${OPENCLAW_PORT}" 2>/dev/null || true
   fi
   echo -e "  VM:   orb -m ${VM_NAME}"
   echo -e "  Logs: orb -m ${VM_NAME} -u root journalctl -u openclaw -f"

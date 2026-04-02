@@ -352,8 +352,8 @@ su -s /bin/bash - "$SVC_USER" -c "
   openclaw config set approvals.exec.enabled false 2>/dev/null || true
   openclaw config set gateway.mode local 2>/dev/null || true
 
-  # Enable exec approvals on Telegram so commands can run from chat
-  openclaw config set channels.telegram.execApprovals --strict-json '{\"enabled\":true}' 2>/dev/null || true
+  # Note: Telegram execApprovals is set later when channels.telegram is configured
+  # (included in the JSON object to avoid being overwritten by oc_set_object)
 
   for skill in apple-notes apple-reminders bear-notes blogwatcher bluebubbles blucli camsnap eightctl gemini gog goplaces himalaya imsg node-connect obsidian openai-whisper openai-whisper-api openhue ordercli peekaboo sag sherpa-onnx-tts songsee sonoscli spotify-player summarize things-mac voice-call wacli; do
     openclaw config set skills.entries.\${skill}.enabled false 2>/dev/null || true
@@ -363,23 +363,27 @@ su -s /bin/bash - "$SVC_USER" -c "
   sleep 2  # Give gateway time to start
 
   # Comprehensive allowlist patterns for complete bypass
-  openclaw approvals allowlist add '*' 2>/dev/null || true
-  openclaw approvals allowlist add 'gws*' 2>/dev/null || true
-  openclaw approvals allowlist add 'github*' 2>/dev/null || true
-  openclaw approvals allowlist add 'gh*' 2>/dev/null || true
-  openclaw approvals allowlist add 'git*' 2>/dev/null || true
-  openclaw approvals allowlist add 'npm*' 2>/dev/null || true
-  openclaw approvals allowlist add 'node*' 2>/dev/null || true
-  openclaw approvals allowlist add 'curl*' 2>/dev/null || true
-  openclaw approvals allowlist add 'wget*' 2>/dev/null || true
-  openclaw approvals allowlist add 'bash*' 2>/dev/null || true
-  openclaw approvals allowlist add 'sh*' 2>/dev/null || true
+  # Apply to both wildcard (*) agent and 'main' agent (used by Telegram sessions)
+  for agent_id in '*' 'main'; do
+    openclaw approvals allowlist add --agent \"\$agent_id\" '*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'gws*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'github*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'gh*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'git*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'npm*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'node*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'curl*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'wget*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'bash*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'sh*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'cd*' 2>/dev/null || true
+    openclaw approvals allowlist add --agent \"\$agent_id\" 'base64*' 2>/dev/null || true
+  done
 
   # Verify approval configuration
   echo 'Approval bypass configuration applied:'
   openclaw config get approvals.exec.enabled 2>/dev/null || echo '  approvals.exec.enabled: not set'
   openclaw config get gateway.mode 2>/dev/null || echo '  gateway.mode: not set'
-  openclaw approvals allowlist list 2>/dev/null || echo '  allowlist: not accessible'
 "
 
 echo "[9/10] Installing headless Chrome service..."
@@ -701,10 +705,10 @@ if [ -f "$ENV_FILE" ]; then
     echo "  Configuring Telegram bot..."
     if [ -n "${TELEGRAM_USER_ID:-}" ]; then
       json_value=$(jq -n --arg token "$TELEGRAM_TOKEN" --arg uid "$TELEGRAM_USER_ID" \
-        '{botToken:$token,enabled:true,dmPolicy:"allowlist",allowFrom:[$uid]}')
-      echo "  Telegram: configured (user ${TELEGRAM_USER_ID} pre-authorized)"
+        '{botToken:$token,enabled:true,dmPolicy:"allowlist",allowFrom:[$uid],execApprovals:{enabled:true}}')
+      echo "  Telegram: configured (user ${TELEGRAM_USER_ID} pre-authorized, exec approvals enabled)"
     else
-      json_value=$(jq -n --arg token "$TELEGRAM_TOKEN" '{botToken:$token,enabled:true}')
+      json_value=$(jq -n --arg token "$TELEGRAM_TOKEN" '{botToken:$token,enabled:true,execApprovals:{enabled:true}}')
       echo "  Telegram: configured (pairing required — set TELEGRAM_USER_ID in .env.local to skip)"
     fi
     oc_set_object "channels.telegram" "$json_value"
@@ -716,6 +720,9 @@ if [ -f "$ENV_FILE" ]; then
       GH_VAL=\"\$(cat)\"
       # Add to systemd env file (used by openclaw.service and agent sessions)
       printf 'GH_TOKEN=%s\n' \"\$GH_VAL\" >> /home/$SVC_USER/.openclaw/.anthropic-env
+      # Also export in .bashrc and /etc/environment so gh CLI works in all shells
+      grep -q 'GH_TOKEN' /home/$SVC_USER/.bashrc 2>/dev/null || printf 'export GH_TOKEN=%s\n' \"\$GH_VAL\" >> /home/$SVC_USER/.bashrc
+      grep -q 'GH_TOKEN' /etc/environment 2>/dev/null || printf 'GH_TOKEN=%s\n' \"\$GH_VAL\" >> /etc/environment
     "
     echo "  GitHub: configured"
   fi
@@ -844,22 +851,26 @@ if [ "$READY" -eq 1 ]; then
     openclaw config set approvals.exec.enabled false 2>/dev/null || true
     openclaw config set gateway.mode local 2>/dev/null || true
 
-    # Reinforce comprehensive allowlist patterns
+    # Reinforce comprehensive allowlist patterns for both wildcard and main agents
     openclaw approvals allowlist clear 2>/dev/null || true
-    openclaw approvals allowlist add '*' 2>/dev/null || true
-    openclaw approvals allowlist add 'gws*' 2>/dev/null || true
-    openclaw approvals allowlist add 'github*' 2>/dev/null || true
-    openclaw approvals allowlist add 'gh*' 2>/dev/null || true
-    openclaw approvals allowlist add 'git*' 2>/dev/null || true
-    openclaw approvals allowlist add 'npm*' 2>/dev/null || true
-    openclaw approvals allowlist add 'node*' 2>/dev/null || true
-    openclaw approvals allowlist add 'curl*' 2>/dev/null || true
-    openclaw approvals allowlist add 'wget*' 2>/dev/null || true
-    openclaw approvals allowlist add 'bash*' 2>/dev/null || true
-    openclaw approvals allowlist add 'sh*' 2>/dev/null || true
-    openclaw approvals allowlist add 'python*' 2>/dev/null || true
-    openclaw approvals allowlist add 'pip*' 2>/dev/null || true
-    openclaw approvals allowlist add 'sudo*' 2>/dev/null || true
+    for agent_id in '*' 'main'; do
+      openclaw approvals allowlist add --agent \"\$agent_id\" '*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'gws*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'github*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'gh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'git*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'npm*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'node*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'curl*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'wget*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'bash*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'sh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'python*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'pip*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'sudo*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'cd*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'base64*' 2>/dev/null || true
+    done
 
     echo 'Final approval bypass verification:'
     echo '  approvals.exec.enabled:' \$(openclaw config get approvals.exec.enabled 2>/dev/null || echo 'not set')
@@ -915,7 +926,8 @@ if [ "$SERVICE_STATUS" = "active" ] && [ "$HTTP_CODE" = "200" ]; then
     fi
     curl -s "https://api.telegram.org/bot${TELEGRAM_TOKEN_VAL}/sendMessage" \
       -d chat_id="${TELEGRAM_USER_ID}" \
-      -d text="OpenClaw is ready at ${TG_URL}" \
+      -d parse_mode="Markdown" \
+      -d text="OpenClaw is ready: [Open Dashboard](${TG_URL})" \
       >/dev/null 2>&1 || true
   fi
 else
