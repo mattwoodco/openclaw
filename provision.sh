@@ -426,14 +426,14 @@ start_services() {
   # Reinforce approval bypass for both wildcard and main (Telegram) agents
   orb -m "$VM_NAME" -u root su -s /bin/bash "$SVC_USER" -c "
     for agent_id in '*' 'main'; do
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" '*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'gws*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'gh*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'git*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'bash*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'sh*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'cd*' 2>/dev/null || true
-      openclaw approvals allowlist add --agent \"\\\$agent_id\" 'base64*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" '*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'gws*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'gh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'git*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'bash*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'sh*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'cd*' 2>/dev/null || true
+      openclaw approvals allowlist add --agent \"\$agent_id\" 'base64*' 2>/dev/null || true
     done
   "
   log_info "Approval bypass allowlist configured"
